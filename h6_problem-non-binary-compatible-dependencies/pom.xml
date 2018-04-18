@@ -1,0 +1,40 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>com.topdesk</groupId>
+		<artifactId>open-source-parent</artifactId>
+		<version>1.0.0</version>
+	</parent>
+	<groupId>com.topdesk.maven-hell</groupId>
+	<artifactId>h6_problem-non-binary-compatible-dependencies</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<dependencies>
+		<dependency>
+			<groupId>com.topdesk.maven-hell</groupId>
+			<artifactId>A-depends-on-guava-10</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
+			<!-- Switching exclusions won't help, we need both guava 10 and 20 -->
+			<exclusions>
+				<exclusion>
+					<groupId>com.google.guava</groupId>
+					<artifactId>guava</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>com.topdesk.maven-hell</groupId>
+			<artifactId>B-depends-on-C</artifactId>
+			<version>0.0.1-SNAPSHOT</version>
+			<!-- Switching exclusions won't help, we need both guava 10 and 20 -->
+<!-- 
+			<exclusions>
+				<exclusion>
+					<groupId>com.google.guava</groupId>
+					<artifactId>guava</artifactId>
+				</exclusion>
+			</exclusions>
+ -->
+		</dependency>
+	</dependencies>
+</project>
