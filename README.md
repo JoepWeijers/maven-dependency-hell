@@ -108,7 +108,7 @@ And `mvn dependency:tree -Dverbose` will now let us know that the version is man
 [INFO]       \- (com.google.guava:guava:jar:20.0:compile - version managed from 10.0.1; omitted for duplicate)
 ```
 
-This solves our dependency clash for now. But people will probably add new dependencies over time. Dependency clashes are typically runtime problems, so how can we prevent them from turning into `ClassNotFoundError`s in production? Having automated tests helps, but it is unlikely that you have 100% percent test coverage.
+This solves our dependency clash for now. But people will probably add new dependencies over time. Dependency clashes are typically runtime problems, so how can we prevent them from turning into `ClassNotFoundException`s in production? Having automated tests helps, but it is unlikely that you have 100% percent test coverage.
 
 ## Solution 3: Maven Enforcer plugin
 At TOPdesk we adopted a zero-tolerance policy for duplicate dependencies. We use the [Maven Enforcer Plugin](https://maven.apache.org/enforcer/maven-enforcer-plugin/) in our Continuous Integration build to break the build if our transitive dependencies versions do not converge to a single version. We add this configuration in [h4_solution3-maven-enforcer-plugin_breaks-build](h4_solution3-maven-enforcer-plugin_breaks-build/pom.xml):
@@ -176,8 +176,71 @@ Running `mvn compile` will now result in a 'Build Success', so the enforcer plug
 
 Note that you sometimes run into a dependency that has different versions of a dependency in its dependency tree, i.e. it has no dependency convergence itself. You unfortunately can't specify the version to exclude with the exclusions section. Adding that section will exclude all versions of that transitive dependency. This can sometimes force you to take a direct dependency on the excluded dependency, to ensure that at least a version of that dependency ends up at your classpath.
 
-Excluding dependencies should not be taken lightly, since they in itself can be the source of `ClassNotFoundError`s. Your dependency has been compiled against a certain version of a library. Providing another version of that dependency at runtime will only work if it is binary compatible for all calls to that library. Binary compatible means that the API of the two version must be the same and with API here we mean class names, method signatures and public field names.
+Excluding dependencies should not be taken lightly, since they in itself can be the source of `ClassNotFoundException`s. Your dependency has been compiled against a certain version of a library. Providing another version of that dependency at runtime will only work if it is binary compatible for all calls to that library. Binary compatible means that the API of the two version must be the same and with API here we mean class names, method signatures and public field names.
 
 There are tools that can show the differences in API between libraries. And there are tools that try to determine all usages of a dependency (e.g. `mvn dependency:analyze`) but determining whether you can safely swap out different versions of a library is nearly impossible. These tools for example don't work well with regards to reflection or service loading using SPI.
 
-We have achieved a small improvement so far: we went from not knowing whether runtime classpath problems would occur, to localizing where they might occur. But there are some more problems ahead.
+We have achieved a small improvement so far: we went from not knowing whether runtime classpath problems would occur, to localizing where they might occur. But there are some more problems ahead. For example: what if there is no 'correct' version of a dependency?
+
+Project [h6_problem-non-binary-compatible-dependencies](h6_problem-non-binary-compatible-dependencies/pom.xml) illustrates a project which has no version of a dependency that suits all transitive requirements. [H6CallingGuava10](h6_problem-non-binary-compatible-dependencies/src/main/java/com/topdesk/maven_hell/problem/H6CallingGuava10.java) requires Guava 10.0.1 on the classpath at runtime and [H6CallingGuava20](h6_problem-non-binary-compatible-dependencies/src/main/java/com/topdesk/maven_hell/problem/H6CallingGuava20.java) needs Guava 20.0. There is no `<exclusion>` that will prevent `ClassNotFoundException`s.
+
+## Solution 4: Shading
+
+To solve this issue, we preferably update the dependency on Guava in project A. If this is not possible we can also change the artifact generated in project A to include the Guava dependency in a so-called 'fat jar'. To achieve this, we modify project A to use the shade plugin as shown in [h7_solution4-create-a-shaded-jar-of-A-depends-on-guava-10](h7_solution4-create-a-shaded-jar-of-A-depends-on-guava-10/pom.xml):
+```
+<build>
+	<plugins>
+		<plugin>
+			<!-- Solution 4: use shading -->
+			<groupId>org.apache.maven.plugins</groupId>
+			<artifactId>maven-shade-plugin</artifactId>
+			<version>3.1.0</version>
+			<executions>
+				<execution>
+					<phase>package</phase>
+					<goals>
+						<goal>shade</goal>
+					</goals>
+					<configuration>
+						<relocations>
+							<relocation>
+								<pattern>com.google</pattern>
+								<shadedPattern>com.topdesk.maven-hell.shaded.com.google</shadedPattern>
+							</relocation>
+						</relocations>
+					</configuration>
+				</execution>
+			</executions>
+		</plugin>
+	</plugins>
+</build>
+```
+
+Instead of creating a regular jar file with only the contents of your project, the shade plugin also unpacks all your dependencies. The trick we use here to make sure that we can have Guava version 10.0.1 on the classpath, next to Guava 20.0, without interfereing is called relocation. We relocate Guava in our jar by renaming all fully qualified class names that start with `com.google` to `com.topdesk.maven-hell.shaded.com.google`. This also updates all calls to any Guava class in your jar.
+
+After running `mvn install` on this project, we update our example project to depend on this shaded version of A, as shown in [h8_solution4-use-a-shaded-jar](h8_solution4-use-a-shaded-jar/pom.xml):
+```
+<dependencies>
+	<!-- Solution 4: use shading -->
+	<dependency>
+		<groupId>com.topdesk.maven-hell</groupId>
+		<artifactId>h7_solution4-create-a-shaded-jar-of-A-depends-on-guava-10</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+	</dependency>
+	...
+</dependencies>
+```
+
+If you are looking at project H8 in Eclipse, you need to right click -> Maven -> Disable workspace resolution. Eclipse is clever and sees that you depend on project H7, which it has in its workspace. Eclipse will then use the classfiles that it compiled itself, instead of the shaded jar from your local Maven repository.
+
+Both [H8CallingGuava10](h8_solution4-use-a-shaded-jar/src/main/java/com/topdesk/maven_hell/problem/H8CallingGuava10.java) and [H8CallingGuava20](h8_solution4-use-a-shaded-jar/src/main/java/com/topdesk/maven_hell/problem/H8CallingGuava20.java) now run correctly. If we look at the dependency tree, we see that there is no transitive dependency on Guava 10.0.1 anymore. Maven has used the [dependency reduced pom of H7](h7_solution4-create-a-shaded-jar-of-A-depends-on-guava-10/dependency-reduced-pom.xml), generated by the shade plugin.
+
+Shading has several downsides:
+* In our case it is pretty easy to change Project A, since it is our project. If this would be a closed source project, then you can't change it to use the shade plugin.
+* Every time Project A or its dependencies change, you need to repackage everything.
+* Shading does not always work. Again in the case of reflection and service loading with SPI. There is a transformer to change SPI manifest files, but that isn't flawless.
+* Shading is slow. The plugin has to iterate through all your class files and update them.
+* Your application and your classpath can become really big. In this example we already get two versions of Guava on our classpath instead of only one. In the big Java monolith at our company we have about 50 times a transitive dependency on Guava. Imagine that each one of those would be shaded, even though Guava is only 2.7 MB, our software package would be almost 150 MB bigger.
+
+## Conclusion
+These are some of the forms of Maven's Dependency Hell that you may encounter. It is a hard problem that not always has a satisfying solution, but I hope you now have a better understanding of your options when you are faced with the Maven Dependency Hell.
